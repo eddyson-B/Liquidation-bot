@@ -5,21 +5,22 @@ A fully permissionless liquidation bot for Jupiter Lend protocol on Solana. This
 ## Features
 
 - **Automated Liquidation Detection**: Continuously monitors Jupiter Lend vaults for liquidatable positions
-- **Flash Loan Integration**: Uses Jupiter Lend's free flash loans to liquidate positions without upfront capital
-- **Jupiter Swap Integration**: Automatically swaps collateral tokens to debt tokens for optimal execution
+- **Multi-RPC Support**: Distributes load across multiple RPC endpoints with parallel scanning
+- **Rate Limit Handling**: Intelligent sequential vault scanning with configurable delays
+- **Telegram Notifications**: Optional real-time alerts for opportunities, successes, and failures
 - **Profit Tracking**: Comprehensive stats tracking for successful liquidations and earned profits
-- **Configurable Parameters**: Customize minimum profit thresholds, polling intervals, and more
+- **Configurable Parameters**: Customize minimum profit thresholds, polling intervals, RPC limits, and more
 - **Verbose Logging**: Detailed logging for monitoring and debugging
 
 ## How It Works
 
 The liquidation bot follows these steps for each liquidation opportunity:
 
-1. **Scan for Opportunities**: Fetches all vaults from Jupiter Lend API and calculates health factors
-2. **Flash Borrow**: Borrows the debt amount using Jupiter Lend's free flash loans
-3. **Liquidate Position**: Liquidates the undercollateralized position to receive collateral
-4. **Swap Collateral**: Uses Jupiter Swap to convert collateral token to debt token
-5. **Repay Flash Loan**: Repays the flash loan and keeps the profit
+1. **Scan for Opportunities**: Fetches all active vaults (≥5% utilization) from Jupiter Lend and checks for liquidatable positions
+2. **Filter by Profit**: Identifies positions where collateral value exceeds debt value by your minimum threshold
+3. **Build Transaction**: Creates optimized liquidation transaction with proper compute units
+4. **Execute Liquidation**: Sends transaction to liquidate the position and receive collateral
+5. **Profit**: Keeps the difference between collateral value and debt paid (the liquidation penalty)
 
 ## Prerequisites
 
@@ -51,8 +52,12 @@ cp .env.example .env
 4. Configure your environment variables in `.env`:
 
 ```env
-# Solana RPC endpoint (use a reliable RPC provider)
-RPC_ENDPOINT=https://api.mainnet-beta.solana.com
+# Solana RPC endpoints - comma-separated for multiple RPCs (recommended)
+# Use reliable RPC providers like Helius, QuickNode, or Triton
+RPC_ENDPOINTS=https://mainnet.helius-rpc.com/?api-key=YOUR_KEY,https://api.mainnet-beta.solana.com
+
+# Or use single RPC endpoint (backward compatible)
+# RPC_ENDPOINT=https://api.mainnet-beta.solana.com
 
 # Your wallet's private key (base58 or array format)
 # KEEP THIS SECURE! Never commit this to git
@@ -61,11 +66,21 @@ WALLET_PRIVATE_KEY=your_private_key_here
 # Minimum profit threshold in USD (optional, defaults to 1)
 MIN_PROFIT_USD=1
 
-# Poll interval in milliseconds (defaults to 5000 - 5 seconds)
-POLL_INTERVAL_MS=5000
+# Poll interval in milliseconds (defaults to 10000 - 10 seconds)
+POLL_INTERVAL_MS=10000
+
+# Maximum concurrent requests per RPC (defaults to 9)
+MAX_REQUESTS_PER_RPC=9
+
+# Delay between vault scans in milliseconds (defaults to 300ms)
+DELAY_BETWEEN_VAULTS_MS=300
 
 # Enable verbose logging (true/false)
 VERBOSE=true
+
+# Telegram Bot Configuration (optional)
+TELEGRAM_BOT_TOKEN=your_bot_token_here
+TELEGRAM_CHAT_ID=your_chat_id_here
 ```
 
 ## Getting Your Private Key
@@ -129,11 +144,18 @@ npm run watch
 
 | Variable | Description | Default | Required |
 |----------|-------------|---------|----------|
-| `RPC_ENDPOINT` | Solana RPC endpoint URL | - | Yes |
+| `RPC_ENDPOINTS` | Comma-separated Solana RPC URLs (recommended) | - | Yes* |
+| `RPC_ENDPOINT` | Single Solana RPC endpoint URL (legacy) | - | Yes* |
 | `WALLET_PRIVATE_KEY` | Wallet private key (base58 or array format) | - | Yes |
 | `MIN_PROFIT_USD` | Minimum profit threshold in USD | 1 | No |
-| `POLL_INTERVAL_MS` | Time between scans in milliseconds | 5000 | No |
+| `POLL_INTERVAL_MS` | Time between scans in milliseconds | 10000 | No |
+| `MAX_REQUESTS_PER_RPC` | Max concurrent requests per RPC | 9 | No |
+| `DELAY_BETWEEN_VAULTS_MS` | Delay between vault scans (ms) | 300 | No |
 | `VERBOSE` | Enable detailed logging | false | No |
+| `TELEGRAM_BOT_TOKEN` | Telegram bot token for notifications | - | No |
+| `TELEGRAM_CHAT_ID` | Your Telegram chat ID | - | No |
+
+*Either `RPC_ENDPOINTS` or `RPC_ENDPOINT` must be provided
 
 ### RPC Recommendations
 
@@ -143,7 +165,38 @@ For production use, we strongly recommend using a premium RPC provider:
 - **QuickNode**: https://www.quicknode.com/
 - **Triton**: https://triton.one/
 
-Free public RPCs have rate limits that may impact bot performance.
+Free public RPCs have rate limits that may impact bot performance. Using multiple RPC endpoints with `RPC_ENDPOINTS` distributes the load and increases reliability.
+
+### Telegram Notifications (Optional)
+
+To enable Telegram notifications:
+
+1. **Create a Telegram Bot**:
+   - Message [@BotFather](https://t.me/BotFather) on Telegram
+   - Send `/newbot` and follow the prompts
+   - Save the bot token provided
+
+2. **Get Your Chat ID**:
+   - Message [@userinfobot](https://t.me/userinfobot) on Telegram
+   - It will reply with your chat ID
+   - Or start a chat with your bot and send `/start`, then check the bot logs
+
+3. **Configure Environment Variables**:
+   ```env
+   TELEGRAM_BOT_TOKEN=123456789:ABCdefGHIjklMNOpqrsTUVwxyz
+   TELEGRAM_CHAT_ID=123456789
+   ```
+
+4. **Test Notifications**:
+   ```bash
+   npm run test:telegram
+   ```
+
+The bot will send notifications for:
+- Bot startup/shutdown
+- Liquidation opportunities found
+- Successful liquidations
+- Failed liquidation attempts
 
 ## Monitoring
 
@@ -191,8 +244,10 @@ jupiter-lend-liquidation-bot/
 ├── src/
 │   ├── index.ts          # Entry point
 │   ├── liquidator.ts     # Main liquidation logic
+│   ├── rpc-manager.ts    # Multi-RPC connection manager
 │   ├── config.ts         # Configuration management
 │   ├── logger.ts         # Logging utility
+│   ├── telegram.ts       # Telegram notification service
 │   └── types.ts          # TypeScript type definitions
 ├── dist/                 # Compiled JavaScript output
 ├── .env                  # Environment variables (not in git)
@@ -205,6 +260,8 @@ jupiter-lend-liquidation-bot/
 ### Key Components
 
 - **LiquidationBot**: Main class that orchestrates liquidation operations
+- **MultiRPCManager**: Manages multiple RPC connections with round-robin distribution
+- **TelegramNotifier**: Sends real-time notifications via Telegram
 - **Config**: Loads and validates configuration from environment variables
 - **Logger**: Provides structured logging with different levels
 - **Types**: TypeScript interfaces for type safety
@@ -248,20 +305,23 @@ VERBOSE=true
 
 ## Performance Optimization
 
-1. **RPC Quality**: Use a high-quality RPC provider with low latency
-2. **Poll Interval**: Adjust `POLL_INTERVAL_MS` based on market conditions
-3. **Profit Threshold**: Set `MIN_PROFIT_USD` to avoid unprofitable liquidations
-4. **Compute Units**: The bot uses optimized compute unit limits for faster execution
+1. **Multi-RPC Setup**: Use multiple high-quality RPC endpoints with `RPC_ENDPOINTS` for better reliability and throughput
+2. **RPC Quality**: Use premium RPC providers (Helius, QuickNode, Triton) with low latency
+3. **Rate Limit Tuning**: Adjust `DELAY_BETWEEN_VAULTS_MS` and `MAX_REQUESTS_PER_RPC` to optimize scanning speed while respecting rate limits
+4. **Poll Interval**: Adjust `POLL_INTERVAL_MS` based on market conditions (lower for more active markets)
+5. **Profit Threshold**: Set `MIN_PROFIT_USD` to avoid unprofitable liquidations and save on transaction fees
+6. **Compute Units**: The bot uses optimized compute unit limits (1.4M units) for complex liquidation transactions
 
 ## Contributing
 
-This is a template project. Feel free to:
+This is an open-source project. Contributions welcome:
 
-- Add more sophisticated profit calculations
-- Implement parallel liquidation attempts
-- Add support for multiple vaults simultaneously
-- Enhance error handling and retry logic
-- Add Telegram/Discord notifications
+- Add more sophisticated profit calculations and simulations
+- Implement MEV protection strategies
+- Add support for custom slippage parameters
+- Enhance error handling and retry logic with exponential backoff
+- Add Discord/Slack notification integrations
+- Implement flash loan integration for capital-efficient liquidations
 
 ## Resources
 

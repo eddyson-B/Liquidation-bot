@@ -11,6 +11,7 @@ export interface Config {
   pollIntervalMs: number;
   verbose: boolean;
   maxRequestsPerRpc: number;
+  delayBetweenVaults: number;
   telegramBotToken?: string;
   telegramChatId?: string;
 }
@@ -59,6 +60,7 @@ export function loadConfig(): Config {
     pollIntervalMs: parseInt(process.env.POLL_INTERVAL_MS || '10000'),
     verbose: process.env.VERBOSE === 'true',
     maxRequestsPerRpc: parseInt(process.env.MAX_REQUESTS_PER_RPC || '9'),
+    delayBetweenVaults: parseInt(process.env.DELAY_BETWEEN_VAULTS_MS || '300'),
     telegramBotToken: process.env.TELEGRAM_BOT_TOKEN,
     telegramChatId: process.env.TELEGRAM_CHAT_ID
   };

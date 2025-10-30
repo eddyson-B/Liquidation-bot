@@ -113,10 +113,12 @@ export class MultiRPCManager {
 
   /**
    * Execute parallel operations across all healthy RPCs
+   * Adds delays between items to respect Jupiter API rate limits
    */
   async executeParallel<T>(
     items: any[],
-    fn: (item: any, connection: Connection) => Promise<T>
+    fn: (item: any, connection: Connection) => Promise<T>,
+    delayBetweenItems: number = 200
   ): Promise<T[]> {
     const healthyConnections = this.getAllConnections();
 
@@ -134,12 +136,20 @@ export class MultiRPCManager {
 
       const results: T[] = [];
 
-      for (const item of itemSlice) {
+      for (let i = 0; i < itemSlice.length; i++) {
+        const item = itemSlice[i];
+
         try {
           const result = await this.executeRateLimited(connection, (conn) =>
             fn(item, conn)
           );
           results.push(result);
+
+          // Add delay between items to respect Jupiter API rate limits
+          // Skip delay after the last item
+          if (i < itemSlice.length - 1 && delayBetweenItems > 0) {
+            await this.sleep(delayBetweenItems);
+          }
         } catch (error: any) {
           // Log but continue with other items
           this.logger.debug(`Error processing item: ${error.message}`);
@@ -151,6 +161,10 @@ export class MultiRPCManager {
 
     const allResults = await Promise.all(promises);
     return allResults.flat();
+  }
+
+  private sleep(ms: number): Promise<void> {
+    return new Promise(resolve => setTimeout(resolve, ms));
   }
 
   /**

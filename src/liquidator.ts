@@ -25,6 +25,7 @@ export class LiquidationBot {
   private stats: LiquidationStats;
   private lendClient: Client;
   private telegram: TelegramNotifier | null;
+  private delayBetweenVaults: number;
 
   constructor(
     rpcEndpoints: string[],
@@ -32,12 +33,14 @@ export class LiquidationBot {
     minProfitUsd: number,
     verbose: boolean = false,
     telegram: TelegramNotifier | null = null,
-    maxRequestsPerRpc: number = 9
+    maxRequestsPerRpc: number = 9,
+    delayBetweenVaults: number = 300
   ) {
     this.logger = new Logger(verbose);
     this.rpcManager = new MultiRPCManager(rpcEndpoints, this.logger, maxRequestsPerRpc);
     this.wallet = wallet;
     this.minProfitUsd = minProfitUsd;
+    this.delayBetweenVaults = delayBetweenVaults;
     this.stats = {
       totalAttempts: 0,
       successfulLiquidations: 0,
@@ -53,6 +56,7 @@ export class LiquidationBot {
     this.logger.info(`Wallet: ${this.wallet.publicKey.toString()}`);
     this.logger.info(`Min profit threshold: $${this.minProfitUsd}`);
     this.logger.info(`RPC endpoints: ${rpcEndpoints.length}`);
+    this.logger.info(`Delay between vaults: ${delayBetweenVaults}ms`);
 
     if (this.telegram?.isEnabled()) {
       this.logger.info('Telegram notifications: ENABLED');
@@ -146,14 +150,14 @@ export class LiquidationBot {
     try {
       const startTime = Date.now();
 
-      // Fetch vault list once
+      // Fetch vault list
       const vaults = await this.lendClient.borrow.getVaults();
 
       if (!vaults || vaults.length === 0) {
         return [];
       }
 
-      // Filter out inactive vaults before parallel scanning
+      // Filter out inactive vaults
       const activeVaults = vaults.filter(vault => {
         const borrowAmount = parseFloat(vault.totalBorrow) / Math.pow(10, vault.borrowToken.decimals);
         const supplyAmount = parseFloat(vault.totalSupply) / Math.pow(10, vault.supplyToken.decimals);
@@ -167,28 +171,29 @@ export class LiquidationBot {
       });
 
       this.logger.debug(
-        `Scanning ${activeVaults.length} active vaults (${vaults.length - activeVaults.length} skipped) across ${this.rpcManager.getHealthStatus().healthy} RPCs...`
+        `Scanning ${activeVaults.length} active vaults (${vaults.length - activeVaults.length} skipped) sequentially...`
       );
 
-      // Parallel scan all active vaults across multiple RPCs
-      const scanResults = await this.rpcManager.executeParallel(
-        activeVaults,
-        async (vault: any, connection: Connection) => {
-          try {
-            // Scan this specific vault for liquidations
-            const liquidationData = await getLiquidations({
-              vaultId: vault.id,
-              connection,
-              signer: this.wallet.publicKey,
-            });
+      const opportunities: LiquidationOpportunity[] = [];
+      let scannedCount = 0;
 
-            if (!liquidationData || liquidationData.length === 0) {
-              return [];
-            }
+      // Sequential scanning with delays to respect rate limits
+      for (const vault of activeVaults) {
+        try {
+          // Rotate through RPCs for load distribution
+          const connection = this.rpcManager.getNextConnection();
 
+          // Scan this specific vault for liquidations
+          const liquidationData = await getLiquidations({
+            vaultId: vault.id,
+            connection,
+            signer: this.wallet.publicKey,
+          });
+
+          scannedCount++;
+
+          if (liquidationData && liquidationData.length > 0) {
             // Process liquidation opportunities
-            const opportunities: LiquidationOpportunity[] = [];
-
             for (const liquidation of liquidationData) {
               // Convert to human-readable amounts
               const debtAmount = parseFloat(liquidation.amtIn) / Math.pow(10, vault.borrowToken.decimals);
@@ -218,26 +223,29 @@ export class LiquidationBot {
                 );
               }
             }
+          }
 
-            return opportunities;
-          } catch (error: any) {
-            // Log but don't fail entire scan
-            const isRateLimit = error?.response?.status === 429 ||
-                               error?.message?.includes('429') ||
-                               error?.message?.includes('Too Many Requests');
+          // Delay between vault scans to respect both Jupiter API and RPC rate limits
+          if (scannedCount < activeVaults.length && this.delayBetweenVaults > 0) {
+            await this.sleep(this.delayBetweenVaults);
+          }
 
-            if (isRateLimit) {
-              this.logger.debug(`  Rate limit on vault ${vault.id}`);
-            } else {
-              this.logger.debug(`  Error checking vault ${vault.id}: ${error.message}`);
-            }
+        } catch (error: any) {
+          // Log but continue with other vaults
+          const isRateLimit = error?.response?.status === 429 ||
+                             error?.message?.includes('429') ||
+                             error?.message?.includes('Too Many Requests');
 
-            return [];
+          if (isRateLimit) {
+            this.logger.debug(`  Rate limit on vault ${vault.id}, waiting longer...`);
+            // Wait extra time on rate limit
+            await this.sleep(2000);
+          } else {
+            this.logger.debug(`  Error checking vault ${vault.id}: ${error.message}`);
           }
         }
-      );
+      }
 
-      const opportunities = scanResults.flat();
       const scanTime = ((Date.now() - startTime) / 1000).toFixed(2);
 
       if (opportunities.length === 0) {

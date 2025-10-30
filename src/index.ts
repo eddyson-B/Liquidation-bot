@@ -25,7 +25,8 @@ async function main() {
       config.minProfitUsd,
       config.verbose,
       telegram,
-      config.maxRequestsPerRpc
+      config.maxRequestsPerRpc,
+      config.delayBetweenVaults
     );
 
     // Handle graceful shutdown
