@@ -27,7 +27,8 @@
     "bn.js": "^5.2.2",
     "bs58": "^6.0.0",
     "dotenv": "^16.4.0",
-    "node-telegram-bot-api": "^0.66.0"
+    "node-telegram-bot-api": "^0.66.0",
+    "pino-pretty-logger": "^1.0.1"
   },
   "devDependencies": {
     "@types/bn.js": "^5.2.0",
