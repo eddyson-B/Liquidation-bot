@@ -1,5 +1,3 @@
-import { logger } from "pino-pretty-logger";
-logger.info('\n=====================================\n');
 
 export class Logger {
   constructor(private verbose: boolean = false) {}
